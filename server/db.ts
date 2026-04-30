@@ -1,6 +1,6 @@
-import { eq } from "drizzle-orm";
+import { eq, and, inArray, count } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
-import { InsertUser, users } from "../drizzle/schema";
+import { InsertUser, users, customers, measurements, orders } from "../drizzle/schema";
 import { ENV } from './_core/env';
 
 let _db: ReturnType<typeof drizzle> | null = null;
@@ -89,4 +89,185 @@ export async function getUserByOpenId(openId: string) {
   return result.length > 0 ? result[0] : undefined;
 }
 
-// TODO: add feature queries here as your schema grows.
+/**
+ * Customer queries
+ */
+export async function getCustomers(userId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(customers).where(eq(customers.userId, userId));
+}
+
+export async function getCustomerById(customerId: number, userId: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db
+    .select()
+    .from(customers)
+    .where(and(eq(customers.id, customerId), eq(customers.userId, userId)))
+    .limit(1);
+  return result.length > 0 ? result[0] : undefined;
+}
+
+export async function createCustomer(
+  userId: number,
+  data: { name: string; phone: string; email?: string; notes?: string }
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const result = await db.insert(customers).values({
+    userId,
+    ...data,
+  });
+  return result;
+}
+
+export async function updateCustomer(
+  customerId: number,
+  userId: number,
+  data: Partial<{ name: string; phone: string; email: string; notes: string }>
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return db
+    .update(customers)
+    .set(data)
+    .where(and(eq(customers.id, customerId), eq(customers.userId, userId)));
+}
+
+/**
+ * Measurement queries
+ */
+export async function getMeasurementsByCustomerId(customerId: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db
+    .select()
+    .from(measurements)
+    .where(eq(measurements.customerId, customerId))
+    .orderBy((m) => m.updatedAt)
+    .limit(1);
+  return result.length > 0 ? result[0] : undefined;
+}
+
+export async function createOrUpdateMeasurement(
+  customerId: number,
+  data: any
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const existing = await getMeasurementsByCustomerId(customerId);
+  if (existing) {
+    return db
+      .update(measurements)
+      .set(data)
+      .where(eq(measurements.customerId, customerId));
+  } else {
+    return db.insert(measurements).values({
+      customerId,
+      ...data,
+    });
+  }
+}
+
+/**
+ * Order queries
+ */
+export async function getOrdersByCustomerId(customerId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select()
+    .from(orders)
+    .where(eq(orders.customerId, customerId))
+    .orderBy((o) => o.createdAt);
+}
+
+export async function getOrderById(orderId: number, customerId: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db
+    .select()
+    .from(orders)
+    .where(and(eq(orders.id, orderId), eq(orders.customerId, customerId)))
+    .limit(1);
+  return result.length > 0 ? result[0] : undefined;
+}
+
+export async function createOrder(
+  customerId: number,
+  data: { description: string; designIdeas?: string; notes?: string }
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return db.insert(orders).values({
+    customerId,
+    status: "جديد",
+    ...data,
+  });
+}
+
+export async function updateOrderStatus(
+  orderId: number,
+  customerId: number,
+  status: "جديد" | "قيد التنفيذ" | "جاهز" | "تم التسليم"
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return db
+    .update(orders)
+    .set({ status })
+    .where(and(eq(orders.id, orderId), eq(orders.customerId, customerId)));
+}
+
+export async function getAllOrdersByUserId(userId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  const userCustomers = await getCustomers(userId);
+  if (userCustomers.length === 0) return [];
+  const customerIds = userCustomers.map((c) => c.id);
+  return db.select().from(orders).where((o) => inArray(orders.customerId, customerIds));
+}
+
+export async function getStatistics(userId: number) {
+  const db = await getDb();
+  if (!db) return { totalCustomers: 0, newOrders: 0, readyOrders: 0 };
+  
+  const customerCount = await db
+    .select({ count: count() })
+    .from(customers)
+    .where(eq(customers.userId, userId));
+  
+  const userCustomers = await getCustomers(userId);
+  const customerIds = userCustomers.map((c) => c.id);
+  
+  if (customerIds.length === 0) {
+    return { totalCustomers: 0, newOrders: 0, readyOrders: 0 };
+  }
+  
+  const newOrdersCount = await db
+    .select({ count: count() })
+    .from(orders)
+    .where(
+      and(
+        inArray(orders.customerId, customerIds),
+        eq(orders.status, "جديد")
+      )
+    );
+  
+  const readyOrdersCount = await db
+    .select({ count: count() })
+    .from(orders)
+    .where(
+      and(
+        inArray(orders.customerId, customerIds),
+        eq(orders.status, "جاهز")
+      )
+    );
+  
+  return {
+    totalCustomers: customerCount[0]?.count || 0,
+    newOrders: newOrdersCount[0]?.count || 0,
+    readyOrders: readyOrdersCount[0]?.count || 0,
+  };
+}
